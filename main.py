@@ -1,6 +1,8 @@
+import urllib
 import uuid
 
 import gevent.monkey
+
 gevent.monkey.patch_all(thread=False, select=False)
 from imagekitio.models.UploadFileRequestOptions import UploadFileRequestOptions
 import os
@@ -25,7 +27,7 @@ import sys
 from imagekitio import ImageKit
 from PIL import Image
 import base64
-
+import urllib.request
 load_dotenv()
 app = Flask(__name__)
 cloud_name = os.getenv('cloud_name')
@@ -33,6 +35,7 @@ api_key = os.getenv('api_key')
 api_secret = os.getenv('api_secret')
 MONGODB = os.getenv('MONGODB')
 client = MongoClient(MONGODB)
+db = client['guard_design_dev']
 guard_design_dev = client.guard_design_dev
 config = cloudinary.config(cloud_name=cloud_name,
                            api_key=api_key,
@@ -60,7 +63,6 @@ def scrape_username():  # inputs - username
     projects_text = scraper.get('https://www.artstation.com/users/' + username + '/projects.json').text
     projects_data = json.loads(projects_text)
     array_of_projects = projects_data['data']
-    dict_of_files = projects_data['hash_data']
     documents_of_each_project = []
     set_of_each_project = {}
     # get all projects of the specified user and save links to each project
@@ -76,25 +78,48 @@ def scrape_username():  # inputs - username
         # arrays_of_each_project.append({current_hash_obj['hash_id'] : documents_of_project})
         set_of_each_project[current_hash_obj['hash_id']] = documents_of_project
     projects = []
-    for project in projects_data['data']:
-        obj_of_uploaded_file_to_append = upload_image_to_imagekit(username + '-' + '.jpg', project['cover']['thumb_url'])
-        projects.append(add_project(email,owner_id,obj_of_uploaded_file_to_append, dict_of_files[project["hash_id"]]))
-        break
-    return {'projects': projects_data, 'hash_data': set_of_each_project}
+    for project in array_of_projects:
+        file_type = project['cover']['thumb_url'].split('.')[-1]
+        obj_of_uploaded_file_to_append = upload_image_to_imagekit(username + '-' + '.'+file_type,
+                                                                  project['cover']['thumb_url'])
+        projects.append(add_project(project['title'],email, owner_id, obj_of_uploaded_file_to_append, set_of_each_project, project['hash_id']))
+    db['projects'].insert_many(projects)
+    return "Done"
 
-def add_files(hash_id):
+
+def add_files(hash_id, uid, owner_email, set_of_each_project):
+    array_of_files = []
+    ref_ids = []
+    position = 0
+    time_ms = int(datetime.datetime.now().timestamp() * 1000)
+    image_urls = [url['image_url'] for url in set_of_each_project[hash_id]['assets']]
+    for image_url_to_upload in image_urls:
+        file_type = image_url_to_upload.split('/')[-1]
+        obj_uploaded_file = upload_image_to_imagekit(uid + '-' + str(uuid.uuid4()) + '.'+file_type, image_url_to_upload)
+        obj_uploaded_file['owner_id'] = uid
+        obj_uploaded_file['owner'] = owner_email
+        obj_uploaded_file['lastModified'] = time_ms
+        obj_uploaded_file['caption'] = ''
+        position += 1
+        obj_uploaded_file['position'] = position
+        array_of_files.append(obj_uploaded_file)
+    for file in array_of_files:
+        result = guard_design_dev['files'].insert_one(file)
+        ref_ids.append(result.inserted_id)
+    return ref_ids
 
 
-def add_project(email, owner_id , obj_of_uploaded_file_to_append, dict_of_files):
+def add_project(title, email, owner_id, obj_of_uploaded_file_to_append,set_of_each_project, hash_id):
     time_ms = int(datetime.datetime.now().timestamp() * 1000)
     project_id = str(uuid.uuid4())
-    object_of_project = {"owner": email, "projectId": project_id, "createdAt": time_ms, "reportsCount": 0, "likesCount": 0,
+    object_of_project = {"owner": email, "projectId": project_id, "createdAt": time_ms, "reportsCount": 0,
+                         "likesCount": 0,
                          "viewsCount": 0, "favoritesCount": 0, "commentsCount": 0, "isCommentsDisabled": False,
                          "isDatasetContributor": False, "isEmpty": False, "isLoginRequired": False,
                          "isMatureContent": False, "isMultipleFiles": False, "isPublished": True,
-                         'projectDescription': None, 'projectFiles': [], 'projectSoftwares': [],
+                         'projectDescription': None, 'projectFiles': add_files(hash_id,owner_id,email, set_of_each_project), 'projectSoftwares': [],
                          'projectSubject1': None, 'projectSubject2': None, 'projectSubject3': None, 'projectTags': [],
-                         'projectTitle': None, 'updatedAt': time_ms, 'ownerId': owner_id,
+                         'projectTitle': title, 'updatedAt': time_ms, 'ownerId': owner_id,
                          'previewImage': obj_of_uploaded_file_to_append}
     return object_of_project
 
@@ -123,6 +148,7 @@ def upload_image_to_imagekit(image_name, image_url):
     # # print that uploaded file's ID
     # print(upload.file_id)
     return upload.response_metadata.raw
+
 
 @app.route('/upload_software_icons', methods=[
     'POST'])  # fetch software icons of art station to us and upload it in cloudinary and get back all the links
