@@ -96,12 +96,12 @@ def add_files(hash_id, uid, owner_email, set_of_each_project):
     for image_url_to_upload in image_urls:
         file_type = image_url_to_upload.split('/')[-1]
         obj_uploaded_file = upload_image_to_imagekit(uid + '-' + str(uuid.uuid4()) + '.'+file_type, image_url_to_upload)
-        obj_uploaded_file['owner_id'] = uid
+        obj_uploaded_file['ownerId'] = uid
         obj_uploaded_file['owner'] = owner_email
         obj_uploaded_file['lastModified'] = time_ms
         obj_uploaded_file['caption'] = ''
-        position += 1
         obj_uploaded_file['position'] = position
+        position += 1
         array_of_files.append(obj_uploaded_file)
     for file in array_of_files:
         result = guard_design_dev['files'].insert_one(file)
@@ -115,10 +115,10 @@ def add_project(title, email, owner_id, obj_of_uploaded_file_to_append,set_of_ea
     object_of_project = {"owner": email, "projectId": project_id, "createdAt": time_ms, "reportsCount": 0,
                          "likesCount": 0,
                          "viewsCount": 0, "favoritesCount": 0, "commentsCount": 0, "isCommentsDisabled": False,
-                         "isDatasetContributor": False, "isEmpty": False, "isLoginRequired": False,
-                         "isMatureContent": False, "isMultipleFiles": False, "isPublished": True,
-                         'projectDescription': None, 'projectFiles': add_files(hash_id,owner_id,email, set_of_each_project), 'projectSoftwares': [],
-                         'projectSubject1': None, 'projectSubject2': None, 'projectSubject3': None, 'projectTags': [],
+                         "isDatasetContributor": False, "isEmpty": (False if len(set_of_each_project[hash_id]["assets"]) >= 1 else True), "isLoginRequired": False,
+                         "isMatureContent": set_of_each_project[hash_id]["adult_content"], "isMultipleFiles": False, "isPublished": set_of_each_project[hash_id]['visible'],
+                         'projectDescription': set_of_each_project[hash_id]['description'], 'projectFiles': add_files(hash_id,owner_id,email, set_of_each_project), 'projectSoftwares': set_of_each_project[hash_id]['software_items'],
+                         'projectSubject1': None, 'projectSubject2': None, 'projectSubject3': None, 'projectTags': set_of_each_project[hash_id]['tags'],
                          'projectTitle': title, 'updatedAt': time_ms, 'ownerId': owner_id,
                          'previewImage': obj_of_uploaded_file_to_append}
     return object_of_project
