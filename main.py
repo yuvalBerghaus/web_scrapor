@@ -1,8 +1,12 @@
-import os
-import time
+import uuid
 
 import gevent.monkey
 gevent.monkey.patch_all(thread=False, select=False)
+from imagekitio.models.UploadFileRequestOptions import UploadFileRequestOptions
+import os
+import time
+import datetime
+from io import BytesIO
 from selenium.webdriver.chrome import webdriver
 from selenium import webdriver
 import undetected_chromedriver as uc
@@ -16,12 +20,20 @@ import cloudscraper
 import cloudinary
 import cloudinary.uploader
 import cloudinary.api
+from pymongo import MongoClient
+import sys
+from imagekitio import ImageKit
+from PIL import Image
+import base64
 
 load_dotenv()
 app = Flask(__name__)
 cloud_name = os.getenv('cloud_name')
 api_key = os.getenv('api_key')
 api_secret = os.getenv('api_secret')
+MONGODB = os.getenv('MONGODB')
+client = MongoClient(MONGODB)
+guard_design_dev = client.guard_design_dev
 config = cloudinary.config(cloud_name=cloud_name,
                            api_key=api_key,
                            api_secret=api_secret,
@@ -33,44 +45,88 @@ config = cloudinary.config(cloud_name=cloud_name,
 # 3) download the json from https://www.artstation.com/projects/<hash_id>.json
 
 
+#
+
+
 @app.route('/scrape_user',
            methods=['POST'])  # description - Each hash_id contains all the documents of the specified project
 def scrape_username():  # inputs - username
-    try:
-        data = request.json
-        username = data['username']
-        scraper = cloudscraper.create_scraper()  # returns a CloudScraper instance
-        # Or: scraper = cloudscraper.CloudScraper()  # CloudScraper inherits from requests.Session
-        projects_text = scraper.get('https://www.artstation.com/users/' + username + '/projects.json').text
-        projects_data = json.loads(projects_text)
-        array_of_projects = projects_data['data']
-        documents_of_each_project = []
-        set_of_each_project = {}
-        # get all projects of the specified user and save links to each project
-        for project in array_of_projects:
-            hash_id = project['hash_id']
-            current_link = 'https://www.artstation.com/projects/'
-            current_link += hash_id + '.json'
-            documents_of_each_project.append({'hash_id': hash_id, 'link': current_link})
-        # get all documents of each project (images etc.)
-        for current_hash_obj in documents_of_each_project:
-            project_page_data = scraper.get(current_hash_obj['link']).text
-            documents_of_project = json.loads(project_page_data)
-            # arrays_of_each_project.append({current_hash_obj['hash_id'] : documents_of_project})
-            set_of_each_project[current_hash_obj['hash_id']] = documents_of_project
-        # with open('ref_hash_id.json', 'w') as f:
-        #     json.dump(set_of_each_project, f)
-        #
-        # with open('projects.json', 'w') as f:
-        #     json.dump(projects_data, f)
-        return {'projects': projects_data, 'hash_data': set_of_each_project}
-    except:
-        return 'try calling the api again'
+    data = request.json
+    username = str(data['username'])
+    owner_id = data['owner_id']
+    email = data['email']
+    scraper = cloudscraper.create_scraper()  # returns a CloudScraper instance
+    # Or: scraper = cloudscraper.CloudScraper()  # CloudScraper inherits from requests.Session
+    projects_text = scraper.get('https://www.artstation.com/users/' + username + '/projects.json').text
+    projects_data = json.loads(projects_text)
+    array_of_projects = projects_data['data']
+    dict_of_files = projects_data['hash_data']
+    documents_of_each_project = []
+    set_of_each_project = {}
+    # get all projects of the specified user and save links to each project
+    for project in array_of_projects:
+        hash_id = project['hash_id']
+        current_link = 'https://www.artstation.com/projects/'
+        current_link += hash_id + '.json'
+        documents_of_each_project.append({'hash_id': hash_id, 'link': current_link})
+    # get all documents of each project (images etc.)
+    for current_hash_obj in documents_of_each_project:
+        project_page_data = scraper.get(current_hash_obj['link']).text
+        documents_of_project = json.loads(project_page_data)
+        # arrays_of_each_project.append({current_hash_obj['hash_id'] : documents_of_project})
+        set_of_each_project[current_hash_obj['hash_id']] = documents_of_project
+    projects = []
+    for project in projects_data['data']:
+        obj_of_uploaded_file_to_append = upload_image_to_imagekit(username + '-' + '.jpg', project['cover']['thumb_url'])
+        projects.append(add_project(email,owner_id,obj_of_uploaded_file_to_append, dict_of_files[project["hash_id"]]))
+        break
+    return {'projects': projects_data, 'hash_data': set_of_each_project}
 
+def add_files(hash_id):
+
+
+def add_project(email, owner_id , obj_of_uploaded_file_to_append, dict_of_files):
+    time_ms = int(datetime.datetime.now().timestamp() * 1000)
+    project_id = str(uuid.uuid4())
+    object_of_project = {"owner": email, "projectId": project_id, "createdAt": time_ms, "reportsCount": 0, "likesCount": 0,
+                         "viewsCount": 0, "favoritesCount": 0, "commentsCount": 0, "isCommentsDisabled": False,
+                         "isDatasetContributor": False, "isEmpty": False, "isLoginRequired": False,
+                         "isMatureContent": False, "isMultipleFiles": False, "isPublished": True,
+                         'projectDescription': None, 'projectFiles': [], 'projectSoftwares': [],
+                         'projectSubject1': None, 'projectSubject2': None, 'projectSubject3': None, 'projectTags': [],
+                         'projectTitle': None, 'updatedAt': time_ms, 'ownerId': owner_id,
+                         'previewImage': obj_of_uploaded_file_to_append}
+    return object_of_project
+
+
+def upload_image_to_imagekit(image_name, image_url):
+    public_key = os.getenv('NEXT_PUBLIC_IMAGEKIT_PUBLIC_KEY')
+    private_key = os.getenv('IMAGEKIT_PRIVATE_KEY')
+    url_endpoint = os.getenv('NEXT_PUBLIC_IMAGEKIT_URL_ENDPOINT')
+    imagekit = ImageKit(
+        public_key=public_key,
+        private_key=private_key,
+        url_endpoint=url_endpoint
+    )
+
+    upload = imagekit.upload(
+        file=image_url,
+        file_name=image_name,
+        options=UploadFileRequestOptions(),
+    )
+
+    # print("Upload url", upload)
+    #
+    # # Raw Response
+    # print(upload.response_metadata.raw)
+    #
+    # # print that uploaded file's ID
+    # print(upload.file_id)
+    return upload.response_metadata.raw
 
 @app.route('/upload_software_icons', methods=[
     'POST'])  # fetch software icons of art station to us and upload it in cloudinary and get back all the links
-def upload_to_cloudinary():  # fetch_all_artstation_software_icons_and_upload_to_our_cloud with the return of all the new id's that were generated
+def upload_icons_to_cloudinary():  # fetch_all_artstation_software_icons_and_upload_to_our_cloud with the return of all the new id's that were generated
     urls = []
     letters = "a,b,c,d,e,f,g,h,i,j,k,l,m,n,o,p,q,r,s,tu,v,w,x,y,z".split(',')
 
@@ -207,13 +263,14 @@ def collect_users_of_artstation(counts_per_page, file_text_to_store_name):
     r = requests.get(
         f'https://www.artstation.com/api/v2/community/explore/projects/community.json?page={page_number}&dimension=all&per_page={counts_per_page}')
     pre_len_set_of_users = None
-    while r.json() is not None and len(r.json()['data']) == counts_per_page and pre_len_set_of_users != len(set_of_users):
+    while r.json() is not None and len(r.json()['data']) == counts_per_page and pre_len_set_of_users != len(
+            set_of_users):
         jsonn = json.loads(r.text)
         all_data = jsonn['data']
         pre_len_set_of_users = len(set_of_users)
         for user in all_data:
             set_of_users.add(user['user']['username'])
-        page_number +=1
+        page_number += 1
         r = requests.get(
             f'https://www.artstation.com/api/v2/community/explore/projects/community.json?page={page_number}&dimension=all&per_page={counts_per_page}')
         print(len(set_of_users))
