@@ -1,10 +1,9 @@
+## import gevent.monkey
+# #gevent.monkey.patch_all(thread=False, select=False)
+import grequests
+from imagekitio.models.UploadFileRequestOptions import UploadFileRequestOptions
 import urllib
 import uuid
-
-import gevent.monkey
-
-gevent.monkey.patch_all(thread=False, select=False)
-from imagekitio.models.UploadFileRequestOptions import UploadFileRequestOptions
 import os
 import time
 import datetime
@@ -14,7 +13,6 @@ from selenium import webdriver
 import undetected_chromedriver as uc
 from selenium.webdriver.common.by import By
 from dotenv import load_dotenv
-import grequests
 import requests
 import json
 from flask import Flask, request
@@ -28,6 +26,7 @@ from imagekitio import ImageKit
 from PIL import Image
 import base64
 import urllib.request
+
 load_dotenv()
 app = Flask(__name__)
 cloud_name = os.getenv('cloud_name')
@@ -35,8 +34,8 @@ api_key = os.getenv('api_key')
 api_secret = os.getenv('api_secret')
 MONGODB = os.getenv('MONGODB')
 client = MongoClient(MONGODB)
-db = client['guard_design_dev']
-guard_design_dev = client.guard_design_dev
+# db = client['guard_design_dev']
+db = client['guard-design']
 config = cloudinary.config(cloud_name=cloud_name,
                            api_key=api_key,
                            api_secret=api_secret,
@@ -49,42 +48,49 @@ config = cloudinary.config(cloud_name=cloud_name,
 
 
 #
-
+counter_fails = 0
 
 @app.route('/scrape_user',
            methods=['POST'])  # description - Each hash_id contains all the documents of the specified project
 def scrape_username():  # inputs - username
-    data = request.json
-    username = str(data['username'])
-    owner_id = data['owner_id']
-    email = data['email']
-    scraper = cloudscraper.create_scraper()  # returns a CloudScraper instance
-    # Or: scraper = cloudscraper.CloudScraper()  # CloudScraper inherits from requests.Session
-    projects_text = scraper.get('https://www.artstation.com/users/' + username + '/projects.json').text
-    projects_data = json.loads(projects_text)
-    array_of_projects = projects_data['data']
-    documents_of_each_project = []
-    set_of_each_project = {}
-    # get all projects of the specified user and save links to each project
-    for project in array_of_projects:
-        hash_id = project['hash_id']
-        current_link = 'https://www.artstation.com/projects/'
-        current_link += hash_id + '.json'
-        documents_of_each_project.append({'hash_id': hash_id, 'link': current_link})
-    # get all documents of each project (images etc.)
-    for current_hash_obj in documents_of_each_project:
-        project_page_data = scraper.get(current_hash_obj['link']).text
-        documents_of_project = json.loads(project_page_data)
-        # arrays_of_each_project.append({current_hash_obj['hash_id'] : documents_of_project})
-        set_of_each_project[current_hash_obj['hash_id']] = documents_of_project
-    projects = []
-    for project in array_of_projects:
-        file_type = project['cover']['thumb_url'].split('.')[-1]
-        obj_of_uploaded_file_to_append = upload_image_to_imagekit(username + '-' + '.'+file_type,
-                                                                  project['cover']['thumb_url'])
-        projects.append(add_project(project['title'],email, owner_id, obj_of_uploaded_file_to_append, set_of_each_project, project['hash_id']))
-    db['projects'].insert_many(projects)
-    return "Done"
+    try:
+        data = request.json
+        username = str(data['username'])
+        owner_id = data['owner_id']
+        email = data['email']
+        scraper = cloudscraper.create_scraper()  # returns a CloudScraper instance
+        projects_text = scraper.get('https://www.artstation.com/users/' + username + '/projects.json').text
+        projects_data = json.loads(projects_text)
+        array_of_projects = projects_data['data']
+        documents_of_each_project = []
+        set_of_each_project = {}
+        # get all projects of the specified user and save links to each project
+        for project in array_of_projects:
+            hash_id = project['hash_id']
+            current_link = 'https://www.artstation.com/projects/'
+            current_link += hash_id + '.json'
+            documents_of_each_project.append({'hash_id': hash_id, 'link': current_link})
+        # get all documents of each project (images etc.)
+        for current_hash_obj in documents_of_each_project:
+            project_page_data = scraper.get(current_hash_obj['link']).text
+            documents_of_project = json.loads(project_page_data)
+            # arrays_of_each_project.append({current_hash_obj['hash_id'] : documents_of_project})
+            set_of_each_project[current_hash_obj['hash_id']] = documents_of_project
+        projects = []
+        for project in array_of_projects:
+            file_type = project['cover']['thumb_url'].split('.')[-1]
+            obj_of_uploaded_file_to_append = upload_image_to_imagekit(username + '-' + '.' + file_type,
+                                                                      project['cover']['thumb_url'])
+            projects.append(
+                add_project(project['title'], email, owner_id, obj_of_uploaded_file_to_append, set_of_each_project,
+                            project['hash_id']))
+        db['projects'].insert_many(projects)
+        return "Done"
+    except:
+        if counter_fails < 10:
+            scrape_username()
+        else:
+            return "Done"
 
 
 def add_files(hash_id, uid, owner_email, set_of_each_project):
@@ -95,7 +101,8 @@ def add_files(hash_id, uid, owner_email, set_of_each_project):
     image_urls = [url['image_url'] for url in set_of_each_project[hash_id]['assets']]
     for image_url_to_upload in image_urls:
         file_type = image_url_to_upload.split('/')[-1]
-        obj_uploaded_file = upload_image_to_imagekit(uid + '-' + str(uuid.uuid4()) + '.'+file_type, image_url_to_upload)
+        obj_uploaded_file = upload_image_to_imagekit(uid + '-' + str(uuid.uuid4()) + '.' + file_type,
+                                                     image_url_to_upload)
         obj_uploaded_file['ownerId'] = uid
         obj_uploaded_file['owner'] = owner_email
         obj_uploaded_file['lastModified'] = time_ms
@@ -104,21 +111,27 @@ def add_files(hash_id, uid, owner_email, set_of_each_project):
         position += 1
         array_of_files.append(obj_uploaded_file)
     for file in array_of_files:
-        result = guard_design_dev['files'].insert_one(file)
+        result = db['files'].insert_one(file)
         ref_ids.append(result.inserted_id)
     return ref_ids
 
 
-def add_project(title, email, owner_id, obj_of_uploaded_file_to_append,set_of_each_project, hash_id):
+def add_project(title, email, owner_id, obj_of_uploaded_file_to_append, set_of_each_project, hash_id):
     time_ms = int(datetime.datetime.now().timestamp() * 1000)
     project_id = str(uuid.uuid4())
     object_of_project = {"owner": email, "projectId": project_id, "createdAt": time_ms, "reportsCount": 0,
                          "likesCount": 0,
                          "viewsCount": 0, "favoritesCount": 0, "commentsCount": 0, "isCommentsDisabled": False,
-                         "isDatasetContributor": False, "isEmpty": (False if len(set_of_each_project[hash_id]["assets"]) >= 1 else True), "isLoginRequired": False,
-                         "isMatureContent": set_of_each_project[hash_id]["adult_content"], "isMultipleFiles": False, "isPublished": set_of_each_project[hash_id]['visible'],
-                         'projectDescription': set_of_each_project[hash_id]['description'], 'projectFiles': add_files(hash_id,owner_id,email, set_of_each_project), 'projectSoftwares': set_of_each_project[hash_id]['software_items'],
-                         'projectSubject1': None, 'projectSubject2': None, 'projectSubject3': None, 'projectTags': set_of_each_project[hash_id]['tags'],
+                         "isDatasetContributor": False,
+                         "isEmpty": (False if len(set_of_each_project[hash_id]["assets"]) >= 1 else True),
+                         "isLoginRequired": False,
+                         "isMatureContent": set_of_each_project[hash_id]["adult_content"], "isMultipleFiles": False,
+                         "isPublished": set_of_each_project[hash_id]['visible'],
+                         'projectDescription': set_of_each_project[hash_id]['description'],
+                         'projectFiles': add_files(hash_id, owner_id, email, set_of_each_project),
+                         'projectSoftwares': set_of_each_project[hash_id]['software_items'],
+                         'projectSubject1': None, 'projectSubject2': None, 'projectSubject3': None,
+                         'projectTags': set_of_each_project[hash_id]['tags'],
                          'projectTitle': title, 'updatedAt': time_ms, 'ownerId': owner_id,
                          'previewImage': obj_of_uploaded_file_to_append}
     return object_of_project
